@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## Version 1.6.1
+
+### Fixed
+- Fixed an issue for previously used client IPs of deleted clients are not properly assigned.
+
 ## Version 1.6.0
 
 ### New Features
