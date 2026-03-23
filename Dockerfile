@@ -24,6 +24,9 @@ COPY config/nginx/ /etc/nginx/http.d/
 COPY config/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY config/cli.ini /etc/letsencrypt/cli.ini
 
+#change default Ngnix page
+COPY fake_index.html /var/lib/nginx/html/index.html
+
 COPY scripts/ /app/scripts/
 RUN chmod +x /app/scripts/*.sh
 
