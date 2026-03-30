@@ -924,7 +924,16 @@ class AmneziaApp {
         let suspend_at_value = '';
         if (client && client.suspend_at) {
             const suspendDate = new Date(client.suspend_at * 1000);
-            suspend_at_value = suspendDate.toISOString().slice(0, 16);
+
+            // Format the date in local time for the input field
+            const year = suspendDate.getFullYear();
+            const month = String(suspendDate.getMonth() + 1).padStart(2, '0'); // Month is zero-based
+            const day = String(suspendDate.getDate()).padStart(2, '0');
+            const hours = String(suspendDate.getHours()).padStart(2, '0');
+            const minutes = String(suspendDate.getMinutes()).padStart(2, '0');
+
+            // Combine into the format required by datetime-local: YYYY-MM-DDTHH:mm
+            suspend_at_value = `${year}-${month}-${day}T${hours}:${minutes}`;
         }
         
         const modalHtml = `
@@ -959,16 +968,21 @@ class AmneziaApp {
                             
                             <!-- Scheduled Suspension Section (only for edit mode) -->
                             ${isEditMode ? `
-                            <div class="pt-4 border-t border-gray-200">
-                                <label class="block text-sm font-medium text-gray-700 mb-2">
-                                    Auto-suspend client at:
-                                </label>
-                                <input type="datetime-local" id="suspendAt" value="${suspend_at_value}"
-                                    class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                                <p class="text-xs text-gray-500 mt-1">
-                                    Leave empty to disable auto-suspension. Client will be automatically suspended at the specified date/time.
-                                </p>
+                            <div class="pt-4 border-t border-gray-200 flex items-center space-x-2">
+                            <label for="suspendAt" class="block text-sm font-medium text-gray-700 mb-2 flex-1">
+                                Auto-suspend client at:
+                            </label>
+                            <button type="button" id="clearSuspendAt" onclick="document.getElementById('suspendAt').value = ''"
+                                class="px-3 py-1 text-sm bg-gray-200 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                Reset
+                            </button>
                             </div>
+                            <input type="datetime-local" id="suspendAt" value="${suspend_at_value}"
+                            class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mt-1">
+                            <p class="text-xs text-gray-500 mt-1">
+                            Client will be automatically suspended at the specified date/time.<br>
+                            Leave empty to disable auto-suspension (still need to activate client after suspension).
+                            </p>
                             ` : ''}
                             
                             <div class="pt-4 border-t border-gray-200">
@@ -1123,7 +1137,7 @@ class AmneziaApp {
             }
             data.i_settings = iSettings;
         }
-        
+
         console.log('Saving client with data:', data);
         
         let url, method;
