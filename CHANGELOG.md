@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## Version 1.7.2
+### Fix
+- Client was not properly added when server obfuscation disabled
+
 ## Version 1.7.1
 ### New Features
 - Client creation date is displayed in Edit client and QR code views.
