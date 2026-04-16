@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## Version 1.8.2
+### New Features
+- Display server RX/TX traffic from server interface (ifconfig). It can slightly differ from the traffic amount provided by awg which shows peer traffic. Auto-updated every 5 secs via Websocket.
+- UI improved: nginx and server logs are now shown in UI. Last 100 lines of every log is shown. Use `Reload` button re-read the log from server.
+
+## Version 1.8.1
+### Fix
+- Fix client keys generation
+
+## Version 1.8.0
+### Improvements
+- Switch docker build to source packages instead of ready go-image. ***Potentially*** can be a **BREAKING CHANGE**
+- Add ARM64 build support (ready ARM64 docker image is not provided in DockerHub)
+### Fix
+- Fix an issue when preshared key is not properly generated
+
 ## Version 1.7.2
 ### Fix
 - Client was not properly added when server obfuscation disabled

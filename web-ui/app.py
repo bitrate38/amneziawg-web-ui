@@ -18,6 +18,27 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
 STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
+# Allowlisted log files for log endpoints
+ALLOWED_LOG_FILES = [
+    {"name": "Nginx Access", "path": "/var/log/nginx/access.log", "type": "access"},
+    {"name": "Nginx Error", "path": "/var/log/nginx/error.log", "type": "error"},
+    {"name": "Supervisor", "path": "/var/log/supervisor/supervisord.log", "type": "info"},
+    {"name": "WebUI Access", "path": "/var/log/webui/access.log", "type": "access"},
+    {"name": "WebUI Error", "path": "/var/log/webui/error.log", "type": "error"}
+]
+ALLOWED_LOG_PATHS = {log["path"] for log in ALLOWED_LOG_FILES}
+ALLOWED_LOG_TYPES = {log["type"]: log["path"] for log in ALLOWED_LOG_FILES}
+ALLOWED_LOG_REALPATHS = {os.path.realpath(path) for path in ALLOWED_LOG_PATHS}
+
+def resolve_allowed_log_path(path_value):
+    """Resolve and validate that a path is one of the explicitly allowlisted log files."""
+    if not path_value:
+        return None
+    resolved_path = os.path.realpath(path_value)
+    if resolved_path not in ALLOWED_LOG_REALPATHS:
+        return None
+    return resolved_path
+
 # Essential environment variables
 NGINX_PORT = os.getenv('NGINX_PORT', '80')
 AUTO_START_SERVERS = os.getenv('AUTO_START_SERVERS', 'true').lower() == 'true'
@@ -186,9 +207,9 @@ class AmneziaManager:
     def generate_wireguard_keys(self):
         """Generate real WireGuard keys"""
         try:
-            private_key = self.execute_command("wg genkey")
+            private_key = self.execute_command("awg genkey")
             if private_key:
-                public_key = self.execute_command(f"echo '{private_key}' | wg pubkey")
+                public_key = self.execute_command(f"echo '{private_key}' | awg pubkey")
                 return {
                     "private_key": private_key,
                     "public_key": public_key
@@ -207,7 +228,7 @@ class AmneziaManager:
     def generate_preshared_key(self):
         """Generate preshared key"""
         try:
-            return self.execute_command("wg genpsk")
+            return self.execute_command("awg genpsk")
         except:
             return base64.b64encode(os.urandom(32)).decode('utf-8')
 
@@ -958,10 +979,11 @@ PersistentKeepalive = 25
 
         try:
             # Check if interface exists and is up
-            result = self.execute_command(f"ip link show {server['interface']} 2>/dev/null")
-            if result and "state UNKNOWN" in result:
+            result = subprocess.run(["ip", "link", "show", server['interface']], capture_output=True, text=True)
+            if "state UNKNOWN" in result.stdout:
                 return "running"
             else:
+                print(f"Server {server['interface']} currently stopped")
                 return "stopped"
         except:
             return "stopped"
@@ -996,7 +1018,7 @@ PersistentKeepalive = 25
                     client_copy['status'] = 'active'
             return clients
 
-    def get_traffic_for_server(self, server_id):
+    def get_peer_traffic_for_server(self, server_id):
         server = next((s for s in self.config['servers'] if s['id'] == server_id), None)
         if not server:
             return None
@@ -1108,30 +1130,81 @@ PersistentKeepalive = 25
 
         return clients_data
     
-    def start_traffic_updates(self):
-            """Start traffic updates using SocketIO background task"""
-            def update_traffic():
-                while True:
-                    try:
-                        all_traffic = {}
-                        for server in self.config['servers']:
-                            server_id = server['id']
-                            traffic = self.get_traffic_for_server(server_id)
-                            if traffic:
-                                all_traffic[server_id] = traffic
-                        
-                        if all_traffic:
-                            socketio.emit('traffic_update', {
-                                'timestamp': time.time(),
-                                'traffic': all_traffic
-                            })
-                        
-                    except Exception as e:
-                        print(f"Traffic update error: {e}")
-                    
-                    socketio.sleep(self.traffic_update_interval)
+    def get_server_interface_traffic(self, interface_name):
+        """Get RX/TX traffic for a server interface using ifconfig"""
+        try:
+            result = self.execute_command(f"ifconfig {interface_name}")
+            if not result:
+                return None
             
-            socketio.start_background_task(update_traffic)
+            rx_bytes = "0 B"
+            tx_bytes = "0 B"
+            
+            lines = result.split('\n')
+            for line in lines:
+                line = line.strip()
+                
+                if 'RX bytes:' in line:
+                    import re
+                    match = re.search(r'RX bytes:\d+\s+\(([^)]+)\)', line)
+                    if match:
+                        rx_bytes = match.group(1).strip()
+                
+                if 'TX bytes:' in line:
+                    import re
+                    match = re.search(r'TX bytes:\d+\s+\(([^)]+)\)', line)
+                    if match:
+                        tx_bytes = match.group(1).strip()
+            
+            return {
+                "rx": rx_bytes,
+                "tx": tx_bytes
+            }
+        except Exception as e:
+            print(f"Error getting interface traffic for {interface_name}: {e}")
+            return None
+
+    def get_all_servers_traffic(self):
+        """Get interface traffic for all servers"""
+        servers_traffic = {}
+        for server in self.config['servers']:
+            interface = server.get('interface')
+            if interface:
+                traffic = self.get_server_interface_traffic(interface)
+                if traffic:
+                    servers_traffic[server['id']] = traffic
+        return servers_traffic
+
+    def start_traffic_updates(self):
+        """Start traffic updates using SocketIO background task"""
+        def update_traffic():
+            while True:
+                try:
+                    # Get client traffic
+                    all_client_traffic = {}
+                    for server in self.config['servers']:
+                        server_id = server['id']
+                        traffic = self.get_peer_traffic_for_server(server_id)
+                        if traffic:
+                            all_client_traffic[server_id] = traffic
+                    
+                    # Get server interface traffic
+                    server_interface_traffic = self.get_all_servers_traffic()
+                    
+                    # Send combined data in clean format
+                    if all_client_traffic or server_interface_traffic:
+                        socketio.emit('traffic_update', {
+                            'timestamp': time.time(),
+                            'client_traffic': all_client_traffic,
+                            'server_traffic': server_interface_traffic
+                        })
+                    
+                except Exception as e:
+                    print(f"Traffic update error: {e}")
+                
+                socketio.sleep(self.traffic_update_interval)
+        
+        socketio.start_background_task(update_traffic)
 
 amnezia_manager = AmneziaManager()
 
@@ -1508,9 +1581,15 @@ def update_client_suspend_time(server_id, client_id):
     
 @app.route('/api/servers/<server_id>/traffic')
 def get_server_traffic(server_id):
-    traffic = amnezia_manager.get_traffic_for_server(server_id)
+    traffic = amnezia_manager.get_peer_traffic_for_server(server_id)
     if traffic is None:
         return jsonify({"error": "Server not found or no traffic data"}), 404
+    return jsonify(traffic)
+
+@app.route('/api/servers/traffic')
+def get_all_servers_traffic():
+    """Get interface traffic for all servers"""
+    traffic = amnezia_manager.get_all_servers_traffic()
     return jsonify(traffic)
 
 @app.route('/status')
@@ -1529,11 +1608,106 @@ def get_container_uptime():
     
     return f"Container Uptime: {days}d {hours}h {minutes}m {seconds}s"
 
+@app.route('/api/logs/list')
+def get_logs_list():
+    """Get list of available log files"""
+    # Check which files exist
+    available_logs = []
+    for log in ALLOWED_LOG_FILES:
+        if os.path.exists(log["path"]):
+            stat = os.stat(log["path"])
+            available_logs.append({
+                "name": log["name"],
+                "path": log["path"],
+                "type": log["type"],
+                "size": stat.st_size,
+                "size_human": format_bytes(stat.st_size)
+            })
+    
+    return jsonify(available_logs)
+
+@app.route('/api/logs/view')
+def view_log():
+    """Get last N lines of a log file"""
+    requested_path = request.args.get('path')
+    requested_type = request.args.get('type')
+    lines = request.args.get('lines', 100, type=int)
+
+    log_path = None
+    if requested_type and requested_type in ALLOWED_LOG_TYPES:
+        log_path = ALLOWED_LOG_TYPES[requested_type]
+    elif requested_path and requested_path in ALLOWED_LOG_PATHS:
+        log_path = requested_path
+
+    if not log_path:
+        return jsonify({"error": "Invalid log selection"}), 400
+    
+    if not os.path.exists(log_path):
+        return jsonify({"error": "Log file not found"}), 404
+    
+    try:
+        # Use tail command to get last N lines
+        result = subprocess.run(
+            ["tail", "-n", str(lines), log_path],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        return jsonify({
+            "path": log_path,
+            "lines": result.stdout,
+            "line_count": len(result.stdout.splitlines()),
+            "total_lines": int(subprocess.run(
+                ["wc", "-l", log_path],
+                capture_output=True,
+                text=True,
+                check=True
+            ).stdout.split()[0])
+        })
+    except subprocess.CalledProcessError as e:
+        return jsonify({"error": f"Failed to read log: {str(e)}"}), 500
+
+@app.route('/api/logs/download')
+def download_log():
+    """Download complete log file"""
+    requested_type = request.args.get('type')
+
+    log_path = None
+    if requested_type and requested_type in ALLOWED_LOG_TYPES:
+        log_path = ALLOWED_LOG_TYPES[requested_type]
+
+    safe_log_path = resolve_allowed_log_path(log_path)
+    if not safe_log_path:
+        return jsonify({"error": "Invalid log selection"}), 400
+    
+    if not os.path.exists(safe_log_path):
+        return jsonify({"error": "Log file not found"}), 404
+    
+    # Get filename from path
+    filename = os.path.basename(safe_log_path)
+    safe_log_dir = os.path.dirname(safe_log_path)
+    
+    return send_from_directory(
+        directory=safe_log_dir,
+        path=filename,
+        as_attachment=True,
+        download_name=f"{filename}",
+        mimetype="text/plain"
+    )
+
+def format_bytes(bytes_value):
+    """Format bytes to human readable format"""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if bytes_value < 1024.0:
+            return f"{bytes_value:.1f} {unit}"
+        bytes_value /= 1024.0
+    return f"{bytes_value:.1f} TB"
+
 @socketio.on('connect')
 def handle_connect():
     print(f"WebSocket connected from {request.remote_addr}")
     
-    # Include the port in the status message
     socketio.emit('status', {
         'message': 'Connected to AmneziaWG Web UI',
         'public_ip': amnezia_manager.public_ip,
@@ -1542,17 +1716,20 @@ def handle_connect():
         'client_port': request.environ.get('HTTP_X_FORWARDED_PORT', 'unknown')
     })
     
-    all_traffic = {}
+    all_client_traffic = {}
     for server in amnezia_manager.config['servers']:
         server_id = server['id']
-        traffic = amnezia_manager.get_traffic_for_server(server_id)
+        traffic = amnezia_manager.get_peer_traffic_for_server(server_id)
         if traffic:
-            all_traffic[server_id] = traffic
+            all_client_traffic[server_id] = traffic
     
-    if all_traffic:
+    server_interface_traffic = amnezia_manager.get_all_servers_traffic()
+    
+    if all_client_traffic or server_interface_traffic:
         socketio.emit('traffic_update', {
             'timestamp': time.time(),
-            'traffic': all_traffic
+            'client_traffic': all_client_traffic,
+            'server_traffic': server_interface_traffic
         })
 
 @socketio.on('disconnect')
